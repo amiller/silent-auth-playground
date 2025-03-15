@@ -1,0 +1,9 @@
+fastapi==0.95.0
+python-dotenv==1.0.0
+tweepy==4.14.0
+uvicorn==0.21.1
+Jinja2==3.1.2
+starlette==0.27.0
+python-multipart==0.0.6
+itsdangerous==2.1.2
+httpx==0.24.0 

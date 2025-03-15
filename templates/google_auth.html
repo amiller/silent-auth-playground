@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Google Auth Playground</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+    <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .container {
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .info {
+            background-color: #e8f4f8;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+        .error {
+            background-color: #f8e8e8;
+            color: #c00;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+        .success {
+            background-color: #e8f8e8;
+            color: #0c0;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+        button {
+            background-color: #4285f4;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
+        button:hover {
+            background-color: #357ae8;
+        }
+        button.logout-btn {
+            background-color: #db4437;
+        }
+        button.logout-btn:hover {
+            background-color: #c53929;
+        }
+        button.silent-btn {
+            background-color: #0f9d58;
+        }
+        button.silent-btn:hover {
+            background-color: #0b8043;
+        }
+        #userInfo {
+            display: none;
+        }
+        .user-card {
+            display: flex;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .user-card img {
+            border-radius: 50%;
+            margin-right: 15px;
+        }
+        pre {
+            background-color: #f5f5f5;
+            padding: 10px;
+            border-radius: 5px;
+            overflow-x: auto;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .auth-methods {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .auth-method {
+            flex: 1;
+            min-width: 300px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 15px;
+        }
+        .auth-method h3 {
+            margin-top: 0;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Google Auth Playground</h1>
+    
+    <div class="container">
+        <h2>Configuration</h2>
+        <p><small>This playground demonstrates two OAuth 2.0 flows with Google:</small></p>
+        <ul>
+            <li><strong>Client-side flow</strong>: Uses only the client ID (public identifier)</li>
+            <li><strong>Server-side flow</strong>: Uses both client ID and client secret (more secure)</li>
+        </ul>
+    </div>
+
+    <div class="container">
+        <h2>Authentication Methods</h2>
+        
+        <div class="auth-methods">
+            <div class="auth-method">
+                <h3>Client-side Authentication</h3>
+                <p><small>Uses Google's JavaScript library with client ID only</small></p>
+                <button id="client-login">Login with Google (Client-side)</button>
+                <button id="silent-login" class="silent-btn">Silent Login (prompt=none)</button>
+            </div>
+            
+            <div class="auth-method">
+                <h3>Server-side Authentication</h3>
+                <p><small>Uses authorization code flow with client secret</small></p>
+                <a href="/auth/google"><button>Login with Google (Server-side)</button></a>
+            </div>
+        </div>
+        
+        <button id="logout" class="logout-btn">Logout</button>
+        
+        <div id="status" class="info">
+            {% if request.query_params.get('error') %}
+                <div class="error">Error: {{ request.query_params.get('error') }}</div>
+            {% elif request.query_params.get('login') == 'success' %}
+                <div class="success">Login successful!</div>
+            {% else %}
+                Ready to authenticate. Choose an authentication method above.
+            {% endif %}
+        </div>
+        
+        <div id="userInfo">
+            <h3>User Information</h3>
+            <div class="user-card">
+                <img id="user-image" src="" alt="Profile Image" width="50" height="50">
+                <div>
+                    <div id="user-name"></div>
+                    <div id="user-email"></div>
+                </div>
+            </div>
+            <h3>Authentication Method</h3>
+            <div id="auth-method-used"></div>
+            <h3>Token Information</h3>
+            <pre id="token-payload"></pre>
+        </div>
+    </div>
+
+    <script>
+        let googleClient = null;
+        let tokenClient = null;
+        
+        // Helper to update status
+        function updateStatus(message, type) {
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = message;
+            statusEl.className = type || 'info';
+        }
+        
+        // Initialize Google Client for client-side auth
+        function initializeGoogleClient() {
+            // Fetch client ID from server
+            fetch('/api/client-config')
+                .then(response => response.json())
+                .then(data => {
+                    const clientId = data.client_id;
+                    if (!clientId) {
+                        updateStatus('Error: No Google Client ID provided. Please check your .env file.', 'error');
+                        return;
+                    }
+                    
+                    // Load the Google Identity Services script
+                    const script = document.createElement('script');
+                    script.src = 'https://accounts.google.com/gsi/client';
+                    script.async = true;
+                    script.defer = true;
+                    script.onload = () => {
+                        try {
+                            // Initialize Google client
+                            google.accounts.id.initialize({
+                                client_id: clientId,
+                                callback: handleCredentialResponse,
+                                auto_select: false
+                            });
+                            
+                            // Also initialize the token client for silent auth
+                            tokenClient = google.accounts.oauth2.initTokenClient({
+                                client_id: clientId,
+                                scope: 'email profile openid',
+                                callback: (tokenResponse) => {
+                                    if (tokenResponse.error) {
+                                        updateStatus(`Silent login failed: ${tokenResponse.error}`, 'error');
+                                        return;
+                                    }
+                                    
+                                    // Successfully got a token
+                                    updateStatus('Silent login successful!', 'success');
+                                    // Use the access token to get user info
+                                    fetchUserInfoWithToken(tokenResponse.access_token);
+                                    
+                                    // Also send the token to the server
+                                    fetch('/api/store-token', {
+                                        method: 'POST',
+                                        headers: {
+                                            'Content-Type': 'application/json'
+                                        },
+                                        body: JSON.stringify({
+                                            access_token: tokenResponse.access_token
+                                        })
+                                    });
+                                }
+                            });
+                            
+                            updateStatus('Google client initialized. Ready to authenticate.');
+                        } catch (error) {
+                            updateStatus(`Error initializing Google client: ${error.message}`, 'error');
+                        }
+                    };
+                    document.head.appendChild(script);
+                })
+                .catch(error => {
+                    updateStatus(`Error fetching client configuration: ${error.message}`, 'error');
+                });
+        }
+        
+        // Handle credential response from client-side login
+        function handleCredentialResponse(response) {
+            const credential = response.credential;
+            if (credential) {
+                updateStatus('Login successful!', 'success');
+                displayUserInfoFromIdToken(credential);
+                
+                // Send the token to the server
+                fetch('/api/store-token', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        id_token: credential
+                    })
+                });
+            } else {
+                updateStatus('Login failed.', 'error');
+            }
+        }
+        
+        // Fetch user info using access token
+        function fetchUserInfoWithToken(accessToken) {
+            fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                // Display user info
+                document.getElementById('user-image').src = data.picture;
+                document.getElementById('user-name').textContent = data.name;
+                document.getElementById('user-email').textContent = data.email;
+                document.getElementById('userInfo').style.display = 'block';
+                document.getElementById('auth-method-used').textContent = 'Client-side authentication with access token';
+                document.getElementById('token-payload').textContent = JSON.stringify(data, null, 2);
+            })
+            .catch(error => {
+                updateStatus(`Error fetching user info: ${error.message}`, 'error');
+            });
+        }
+        
+        // Display user info from ID token
+        function displayUserInfoFromIdToken(idToken) {
+            // Decode the JWT token (client-side only, for demo purposes)
+            const payload = JSON.parse(atob(idToken.split('.')[1]));
+            
+            // Display user info
+            document.getElementById('user-image').src = payload.picture;
+            document.getElementById('user-name').textContent = payload.name;
+            document.getElementById('user-email').textContent = payload.email;
+            document.getElementById('userInfo').style.display = 'block';
+            document.getElementById('auth-method-used').textContent = 'Client-side authentication with ID token';
+            document.getElementById('token-payload').textContent = JSON.stringify(payload, null, 2);
+        }
+        
+        // Fetch user info from server (for both auth methods)
+        function fetchUserInfo() {
+            fetch('/api/user-info')
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Not authenticated');
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    // Display user info
+                    document.getElementById('user-image').src = data.picture;
+                    document.getElementById('user-name').textContent = data.name;
+                    document.getElementById('user-email').textContent = data.email;
+                    document.getElementById('userInfo').style.display = 'block';
+                    
+                    // Determine auth method based on session data
+                    fetch('/api/auth-method')
+                        .then(response => response.json())
+                        .then(methodData => {
+                            document.getElementById('auth-method-used').textContent = methodData.method;
+                        });
+                    
+                    document.getElementById('token-payload').textContent = JSON.stringify(data, null, 2);
+                })
+                .catch(error => {
+                    console.log('Not logged in:', error);
+                    document.getElementById('userInfo').style.display = 'none';
+                });
+        }
+        
+        // Event Listeners
+        document.getElementById('client-login').addEventListener('click', () => {
+            google.accounts.id.prompt();
+            updateStatus('Showing login popup...', 'info');
+        });
+        
+        document.getElementById('silent-login').addEventListener('click', () => {
+            updateStatus('Attempting silent login...', 'info');
+            
+            // Request token with prompt=none
+            tokenClient.requestAccessToken({
+                prompt: 'none'
+            });
+        });
+        
+        document.getElementById('logout').addEventListener('click', () => {
+            // Try to disable auto select if Google client is loaded
+            if (typeof google !== 'undefined' && google.accounts && google.accounts.id) {
+                google.accounts.id.disableAutoSelect();
+            }
+            
+            // Clear display
+            document.getElementById('userInfo').style.display = 'none';
+            document.getElementById('user-image').src = '';
+            document.getElementById('user-name').textContent = '';
+            document.getElementById('user-email').textContent = '';
+            document.getElementById('token-payload').textContent = '';
+            
+            // Clear session on server
+            fetch('/api/logout', {
+                method: 'POST'
+            });
+            
+            updateStatus('Logged out successfully.', 'info');
+        });
+        
+        // Check if user is logged in on page load
+        window.onload = function() {
+            fetchUserInfo();
+            initializeGoogleClient();
+        };
+    </script>
+</body>
+</html> 

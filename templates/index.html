@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Twitter Authentication Sandbox</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="container">
+        <div class="panel">
+            <h1>Twitter Authentication Sandbox</h1>
+            <p>This sandbox allows you to test both OAuth1 and OAuth2 authentication flows with Twitter.</p>
+        </div>
+        
+        <div class="panel auth-methods">
+            <div class="auth-section">
+                <h2>OAuth2 Authentication</h2>
+                <p>Modern authentication flow used by Twitter API v2.</p>
+                <div class="flex-row">
+                    <button id="oauth2Login" class="primary">Standard Login</button>
+                    <button id="oauth2SilentCheck" class="secondary">Silent Check</button>
+                </div>
+            </div>
+            
+            <div class="auth-section">
+                <h2>OAuth1 Authentication</h2>
+                <p>Legacy authentication flow used by Twitter API v1.1.</p>
+                <div class="flex-row">
+                    <button id="oauth1Login" class="primary">Standard Login</button>
+                    <button id="oauth1SilentCheck" class="secondary">Silent Check</button>
+                </div>
+                <p>Sign in with Twitter (authenticate endpoint):</p>
+                <div class="flex-row">
+                    <button id="oauth1Signin" class="primary">Sign in with Twitter</button>
+                    <button id="oauth1SigninSilentCheck" class="secondary">Silent Check</button>
+                </div>
+            </div>
+        </div>
+        
+        <div class="panel">
+            <h3>Authentication Results</h3>
+            <div id="loading">Checking login status...</div>
+            <div id="result">Results will appear here</div>
+            
+            <div id="user-profile">
+                <div class="profile-header">
+                    <img id="profile-img" class="profile-image" src="" alt="Profile Image">
+                    <div>
+                        <h3 id="profile-name" class="profile-name"></h3>
+                        <p id="profile-username" class="profile-username"></p>
+                    </div>
+                </div>
+                <p id="profile-description"></p>
+                <button id="fetchUserInfo" class="primary">Refresh User Info</button>
+                <button id="logout" class="secondary logout-btn">Logout</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // DOM Elements
+        const resultDiv = document.getElementById('result');
+        const loadingDiv = document.getElementById('loading');
+        const userProfileDiv = document.getElementById('user-profile');
+        const profileImg = document.getElementById('profile-img');
+        const profileName = document.getElementById('profile-name');
+        const profileUsername = document.getElementById('profile-username');
+        const profileDescription = document.getElementById('profile-description');
+        
+        // OAuth2 Login
+        document.getElementById('oauth2Login').addEventListener('click', function() {
+            openAuthWindow('/oauth2-login', 'Twitter OAuth2 Authentication');
+        });
+        
+        // OAuth1 Login
+        document.getElementById('oauth1Login').addEventListener('click', function() {
+            openAuthWindow('/oauth1-login', 'Twitter OAuth1 Authentication');
+        });
+        
+        // OAuth1 Signin (authenticate endpoint)
+        document.getElementById('oauth1Signin').addEventListener('click', function() {
+            openAuthWindow('/oauth1-signin', 'Twitter OAuth1 Sign In');
+        });
+        
+        // OAuth2 Silent Check
+        document.getElementById('oauth2SilentCheck').addEventListener('click', function() {
+            performSilentCheck('oauth2-silent-check');
+        });
+        
+        // OAuth1 Silent Check
+        document.getElementById('oauth1SilentCheck').addEventListener('click', function() {
+            performSilentCheck('oauth1-silent-check');
+        });
+        
+        // OAuth1 Signin Silent Check
+        document.getElementById('oauth1SigninSilentCheck').addEventListener('click', function() {
+            performSilentCheck('oauth1-signin-silent-check');
+        });
+        
+        // Fetch User Info Button
+        document.getElementById('fetchUserInfo').addEventListener('click', async function() {
+            try {
+                const response = await fetch('/user-info');
+                if (response.ok) {
+                    const userData = await response.json();
+                    displayUserProfile(userData);
+                } else {
+                    throw new Error('Failed to fetch user information');
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `<p class="error">Error: ${error.message}</p>`;
+                userProfileDiv.style.display = 'none';
+            }
+        });
+        
+        // Logout button
+        document.getElementById('logout').addEventListener('click', function() {
+            window.location.href = '/logout';
+        });
+        
+        // Function to perform silent check
+        function performSilentCheck(endpoint) {
+            resultDiv.innerHTML = '';
+            loadingDiv.style.display = 'block';
+            
+            // Create hidden iframe for silent check
+            const iframe = document.createElement('iframe');
+            document.body.appendChild(iframe);
+            
+            // Set timeout for failure case
+            const timeoutId = setTimeout(() => {
+                cleanupIframe();
+                loadingDiv.style.display = 'none';
+                resultDiv.innerHTML = '<p class="error">Timeout - No response received. User likely not logged in to Twitter.</p>';
+            }, 15000);
+            
+            // Listen for messages from the iframe
+            window.addEventListener('message', function authMessageHandler(event) {
+                if (event.origin !== window.location.origin) return;
+                if (event.data.type === 'twitter-auth-result') {
+                    window.removeEventListener('message', authMessageHandler);
+                    cleanupIframe();
+                    loadingDiv.style.display = 'none';
+                    
+                    if (event.data.success) {
+                        resultDiv.innerHTML = `
+                            <p class="success">User is logged in to Twitter via ${event.data.flow.toUpperCase()}!</p>
+                            <pre>${JSON.stringify(event.data.userData, null, 2)}</pre>
+                        `;
+                        displayUserProfile(event.data.userData);
+                    } else {
+                        resultDiv.innerHTML = `
+                            <p class="error">Authentication failed (${event.data.flow ? event.data.flow.toUpperCase() : 'Unknown'}): ${event.data.reason || 'User not logged in or needs to authorize'}</p>
+                            ${event.data.error ? `<p>Error: ${event.data.error}</p>` : ''}
+                        `;
+                        userProfileDiv.style.display = 'none';
+                    }
+                }
+            });
+            
+            function cleanupIframe() {
+                clearTimeout(timeoutId);
+                document.body.removeChild(iframe);
+            }
+            
+            // Point iframe to silent check endpoint
+            iframe.src = '/' + endpoint;
+        }
+        
+        // Function to display user profile
+        function displayUserProfile(userData) {
+            profileImg.src = userData.profile_image || 'https://abs.twimg.com/sticky/default_profile_images/default_profile_normal.png';
+            profileName.textContent = userData.name;
+            profileUsername.textContent = '@' + userData.username;
+            profileDescription.textContent = userData.description || '';
+            userProfileDiv.style.display = 'block';
+        }
+        
+        // Check for authentication on page load
+        window.addEventListener('load', async function() {
+            try {
+                const response = await fetch('/user-info');
+                if (response.ok) {
+                    const userData = await response.json();
+                    resultDiv.innerHTML = `
+                        <p class="success">User is already logged in via ${userData.auth_method.toUpperCase()}!</p>
+                    `;
+                    displayUserProfile(userData);
+                }
+            } catch (error) {
+                // User is not logged in, do nothing
+                console.log("User not logged in");
+            }
+        });
+        
+        // Function to open authentication in a popup window
+        function openAuthWindow(url, title) {
+            // Set popup dimensions
+            const width = 600;
+            const height = 600;
+            const left = (window.innerWidth - width) / 2;
+            const top = (window.innerHeight - height) / 2;
+            
+            // Open popup window
+            const authWindow = window.open(
+                url,
+                title,
+                `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes,status=yes`
+            );
+            
+            // Focus the popup window
+            if (authWindow) {
+                authWindow.focus();
+                
+                // Set up message listener for the popup to communicate back
+                window.addEventListener('message', function authCompleteHandler(event) {
+                    if (event.origin !== window.location.origin) return;
+                    if (event.data.type === 'auth-complete') {
+                        window.removeEventListener('message', authCompleteHandler);
+                        
+                        // Refresh user info when auth is complete
+                        fetch('/user-info')
+                            .then(response => {
+                                if (response.ok) return response.json();
+                                throw new Error('Failed to fetch user information');
+                            })
+                            .then(userData => {
+                                resultDiv.innerHTML = `
+                                    <p class="success">User logged in via ${userData.auth_method.toUpperCase()}!</p>
+                                `;
+                                displayUserProfile(userData);
+                            })
+                            .catch(error => {
+                                resultDiv.innerHTML = `<p class="error">Error: ${error.message}</p>`;
+                            });
+                    }
+                });
+                
+                // Check periodically if popup was closed
+                const checkClosed = setInterval(() => {
+                    if (authWindow.closed) {
+                        clearInterval(checkClosed);
+                        // Optionally check auth status here
+                    }
+                }, 500);
+            } else {
+                resultDiv.innerHTML = '<p class="error">Popup blocked! Please allow popups for this site.</p>';
+            }
+        }
+    </script>
+</body>
+</html>
