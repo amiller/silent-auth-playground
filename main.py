@@ -24,6 +24,14 @@ TWITTER_CALLBACK_URL = os.getenv("TWITTER_CALLBACK_URL", "http://localhost:8000/
 TWITTER_CONSUMER_KEY = os.getenv("TWITTER_CONSUMER_KEY")
 TWITTER_CONSUMER_SECRET = os.getenv("TWITTER_CONSUMER_SECRET")
 
+# Create shared OAuth2 handler
+oauth2_user_handler = tweepy.OAuth2UserHandler(
+    client_id=TWITTER_CLIENT_ID,
+    client_secret=TWITTER_CLIENT_SECRET,
+    redirect_uri=TWITTER_CALLBACK_URL,
+    scope=["tweet.read", "users.read"],
+)
+
 # Custom middleware for Content Security Policy
 class CSPMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -58,52 +66,25 @@ async def index(request: Request):
 @app.get("/oauth2-login")
 async def oauth2_login(request: Request):
     """Standard OAuth2 Twitter login flow"""
-    # Create OAuth2 handler
-    oauth2_user_handler = tweepy.OAuth2UserHandler(
-        client_id=TWITTER_CLIENT_ID,
-        client_secret=TWITTER_CLIENT_SECRET,
-        redirect_uri=TWITTER_CALLBACK_URL,
-        scope=["tweet.read", "users.read"],
-    )
+    # Use shared OAuth2 handler
     
-    # Generate state parameter for security
-    state = secrets.token_urlsafe(32)
-    request.session["oauth2_state"] = state
     # Store that we're doing OAuth2
     request.session["auth_flow"] = "oauth2"
     
     # Get the authorization URL
     auth_url = oauth2_user_handler.get_authorization_url()
     
-    # Append state manually to ensure it's included
-    if "?" in auth_url:
-        auth_url += f"&state={state}"
-    else:
-        auth_url += f"?state={state}"
-        
     return RedirectResponse(auth_url)
 
 @app.get("/oauth2-silent-check")
 async def oauth2_silent_check(request: Request):
     """Silent OAuth2 check to verify if user is already authenticated"""
-    oauth2_user_handler = tweepy.OAuth2UserHandler(
-        client_id=TWITTER_CLIENT_ID,
-        client_secret=TWITTER_CLIENT_SECRET,
-        redirect_uri=TWITTER_CALLBACK_URL,
-        scope=["tweet.read", "users.read"],
-    )
+    # Use shared OAuth2 handler
     
-    state = secrets.token_urlsafe(32)
-    request.session["oauth2_state"] = state
     request.session["auth_flow"] = "oauth2"
     request.session["silent_check"] = True
     
     auth_url = oauth2_user_handler.get_authorization_url()
-    
-    if "?" in auth_url:
-        auth_url += f"&state={state}"
-    else:
-        auth_url += f"?state={state}"
     
     return RedirectResponse(auth_url)
 
@@ -266,12 +247,6 @@ async def callback(request: Request, code: str = None, state: str = None,
                                 }}, 
                                 window.location.origin
                             );
-                            // Close this popup window after sending the message
-                            setTimeout(function() {{
-                                window.close();
-                                // If window doesn't close, redirect
-                                window.location.href = "/";
-                            }}, 1000);
                         }}
                     </script>
                 </body>
@@ -309,56 +284,6 @@ async def callback(request: Request, code: str = None, state: str = None,
                                 }, 
                                 window.location.origin
                             );
-                            // Close this popup window after sending the message
-                            setTimeout(function() {
-                                window.close();
-                                // If window doesn't close, redirect
-                                window.location.href = "/";
-                            }, 1000);
-                        }
-                    </script>
-                </body>
-                </html>
-            """)
-        
-        # Verify state
-        session_state = request.session.get("oauth2_state")
-        if not session_state or state != session_state:
-            return HTMLResponse("""
-                <html>
-                <head>
-                    <title>Authentication Failed</title>
-                </head>
-                <body>
-                    <h1>Authentication Failed</h1>
-                    <p>State mismatch - possible CSRF attack.</p>
-                    <script>
-                        if (window.parent !== window) {
-                            // For iframe (silent check)
-                            window.parent.postMessage(
-                                { type: 'twitter-auth-result', 
-                                  flow: 'oauth2',
-                                  success: false, 
-                                  reason: 'state_mismatch' }, 
-                                '*'
-                            );
-                        } else if (window.opener) {
-                            // For popup window
-                            window.opener.postMessage(
-                                { 
-                                    type: 'auth-complete',
-                                    flow: 'oauth2',
-                                    success: false,
-                                    reason: 'state_mismatch'
-                                }, 
-                                window.location.origin
-                            );
-                            // Close this popup window after sending the message
-                            setTimeout(function() {
-                                window.close();
-                                // If window doesn't close, redirect
-                                window.location.href = "/";
-                            }, 1000);
                         }
                     </script>
                 </body>
@@ -367,21 +292,20 @@ async def callback(request: Request, code: str = None, state: str = None,
         
         try:
             # Exchange code for access token
-            oauth2_user_handler = tweepy.OAuth2UserHandler(
-                client_id=TWITTER_CLIENT_ID,
-                client_secret=TWITTER_CLIENT_SECRET,
-                redirect_uri=TWITTER_CALLBACK_URL,
-                scope=["tweet.read", "users.read"],
-            )
+            # Use shared OAuth2 handler
             
-            # Get access token
-            access_token = oauth2_user_handler.fetch_token(code)
+            # Construct the full callback URL with all parameters
+            callback_url = str(request.url)
             
+            # Get access token by passing the full callback URL
+            print("callback_url: ", callback_url)
+            access_token = oauth2_user_handler.fetch_token(callback_url)
+            print("access_token: ", access_token)
             # Create client
             client = tweepy.Client(access_token["access_token"])
             
             # Get user information
-            user_data = client.get_me(user_fields=["profile_image_url", "description", "name"])
+            user_data = client.get_me(user_fields=["profile_image_url", "description", "name"], user_auth=False)
             
             # Store token in session
             request.session["oauth2_token"] = access_token
@@ -389,8 +313,6 @@ async def callback(request: Request, code: str = None, state: str = None,
             request.session["auth_method"] = "oauth2"
             
             # Clear temporary session data
-            if "oauth2_state" in request.session:
-                del request.session["oauth2_state"]
             if "auth_flow" in request.session:
                 del request.session["auth_flow"]
             if "silent_check" in request.session:
@@ -436,14 +358,6 @@ async def callback(request: Request, code: str = None, state: str = None,
                                 }}, 
                                 window.location.origin
                             );
-                            // Close this popup window after sending the message
-                            setTimeout(function() {{
-                                window.close();
-                                // If window doesn't close (e.g., if it wasn't opened by JavaScript)
-                                if (window.opener) {{
-                                    window.location.href = "/";
-                                }}
-                            }}, 1000);
                         </script>
                     </body>
                     </html>
@@ -482,12 +396,6 @@ async def callback(request: Request, code: str = None, state: str = None,
                                 }}, 
                                 window.location.origin
                             );
-                            // Close this popup window after sending the message
-                            setTimeout(function() {{
-                                window.close();
-                                // If window doesn't close, redirect
-                                window.location.href = "/";
-                            }}, 1000);
                         }}
                     </script>
                 </body>
@@ -532,12 +440,6 @@ async def callback(request: Request, code: str = None, state: str = None,
                                 }}, 
                                 window.location.origin
                             );
-                            // Close this popup window after sending the message
-                            setTimeout(function() {{
-                                window.close();
-                                // If window doesn't close, redirect
-                                window.location.href = "/";
-                            }}, 1000);
                         }}
                     </script>
                 </body>
@@ -577,12 +479,6 @@ async def callback(request: Request, code: str = None, state: str = None,
                                 }}, 
                                 window.location.origin
                             );
-                            // Close this popup window after sending the message
-                            setTimeout(function() {{
-                                window.close();
-                                // If window doesn't close, redirect
-                                window.location.href = "/";
-                            }}, 1000);
                         }}
                     </script>
                 </body>
@@ -623,12 +519,6 @@ async def callback(request: Request, code: str = None, state: str = None,
                                 }}, 
                                 window.location.origin
                             );
-                            // Close this popup window after sending the message
-                            setTimeout(function() {{
-                                window.close();
-                                // If window doesn't close, redirect
-                                window.location.href = "/";
-                            }}, 1000);
                         }}
                     </script>
                 </body>
@@ -711,14 +601,6 @@ async def callback(request: Request, code: str = None, state: str = None,
                                 }}, 
                                 window.location.origin
                             );
-                            // Close this popup window after sending the message
-                            setTimeout(function() {{
-                                window.close();
-                                // If window doesn't close (e.g., if it wasn't opened by JavaScript)
-                                if (window.opener) {{
-                                    window.location.href = "/";
-                                }}
-                            }}, 1000);
                         </script>
                     </body>
                     </html>
@@ -759,12 +641,6 @@ async def callback(request: Request, code: str = None, state: str = None,
                                 }}, 
                                 window.location.origin
                             );
-                            // Close this popup window after sending the message
-                            setTimeout(function() {{
-                                window.close();
-                                // If window doesn't close, redirect
-                                window.location.href = "/";
-                            }}, 1000);
                         }}
                     </script>
                 </body>
@@ -799,7 +675,7 @@ async def user_info(request: Request):
                 raise HTTPException(status_code=401, detail="OAuth2 token not found")
                 
             client = tweepy.Client(token["access_token"])
-            user_data = client.get_me(user_fields=["profile_image_url", "description", "name"])
+            user_data = client.get_me(user_fields=["profile_image_url", "description", "name"], user_auth=False)
             
             return {
                 "auth_method": "oauth2",
