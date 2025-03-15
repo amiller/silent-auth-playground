@@ -10,6 +10,15 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 import tweepy
 import json
+import ssl
+import socket
+from pathlib import Path
+from cryptography import x509
+from cryptography.x509.oid import NameOID
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.backends import default_backend
+from datetime import datetime, timedelta
 
 # Load environment variables
 load_dotenv()
@@ -18,19 +27,65 @@ load_dotenv()
 # OAuth2 credentials
 TWITTER_CLIENT_ID = os.getenv("TWITTER_CLIENT_ID")
 TWITTER_CLIENT_SECRET = os.getenv("TWITTER_CLIENT_SECRET")
-TWITTER_CALLBACK_URL = os.getenv("TWITTER_CALLBACK_URL", "http://localhost:8000/callback")
+TWITTER_CALLBACK_URL = os.getenv("TWITTER_CALLBACK_URL", "https://mydomain.com:8000/callback")
 
 # OAuth1 credentials
 TWITTER_CONSUMER_KEY = os.getenv("TWITTER_CONSUMER_KEY")
 TWITTER_CONSUMER_SECRET = os.getenv("TWITTER_CONSUMER_SECRET")
 
-# Create shared OAuth2 handler
-oauth2_user_handler = tweepy.OAuth2UserHandler(
-    client_id=TWITTER_CLIENT_ID,
-    client_secret=TWITTER_CLIENT_SECRET,
-    redirect_uri=TWITTER_CALLBACK_URL,
-    scope=["tweet.read", "users.read"],
-)
+# Function to generate self-signed certificates
+def generate_self_signed_cert(cert_file="localhost.crt", key_file="localhost.key"):
+    """Generate a self-signed certificate for localhost"""
+    # Check if certificate files already exist
+    if os.path.exists(cert_file) and os.path.exists(key_file):
+        print(f"Certificate files {cert_file} and {key_file} already exist. Using existing files.")
+        return cert_file, key_file
+    
+    print("Generating self-signed certificate for localhost...")
+    
+    # Generate private key
+    private_key = rsa.generate_private_key(
+        public_exponent=65537,
+        key_size=2048,
+        backend=default_backend()
+    )
+    
+    # Create a self-signed certificate
+    subject = issuer = x509.Name([
+        x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
+        x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, "CA"),
+        x509.NameAttribute(NameOID.LOCALITY_NAME, "San Francisco"),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Twitter Auth Sandbox"),
+        x509.NameAttribute(NameOID.COMMON_NAME, "mydomain.com"),
+    ])
+    
+    cert = x509.CertificateBuilder().subject_name(
+        subject
+    ).issuer_name(
+        issuer
+    ).public_key(
+        private_key.public_key()
+    ).serial_number(
+        x509.random_serial_number()
+    ).not_valid_before(
+        datetime.utcnow()
+    ).not_valid_after(
+        datetime.utcnow() + timedelta(days=365)
+    ).sign(private_key, hashes.SHA256(), default_backend())
+    
+    # Write the certificate and private key to disk
+    with open(key_file, "wb") as f:
+        f.write(private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption()
+        ))
+    
+    with open(cert_file, "wb") as f:
+        f.write(cert.public_bytes(serialization.Encoding.PEM))
+    
+    print(f"Self-signed certificate generated: {cert_file}, {key_file}")
+    return cert_file, key_file
 
 # Custom middleware for Content Security Policy
 class CSPMiddleware(BaseHTTPMiddleware):
@@ -56,6 +111,14 @@ os.makedirs("static", exist_ok=True)
 # Mount static files directory
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+# Create shared OAuth2 handler
+oauth2_user_handler = tweepy.OAuth2UserHandler(
+    client_id=TWITTER_CLIENT_ID,
+    client_secret=TWITTER_CLIENT_SECRET,
+    redirect_uri=TWITTER_CALLBACK_URL,
+    scope=["tweet.read", "users.read"],
+)
+
 # Routes
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
@@ -66,8 +129,7 @@ async def index(request: Request):
 @app.get("/oauth2-login")
 async def oauth2_login(request: Request):
     """Standard OAuth2 Twitter login flow"""
-    # Use shared OAuth2 handler
-    
+
     # Store that we're doing OAuth2
     request.session["auth_flow"] = "oauth2"
     
@@ -79,11 +141,10 @@ async def oauth2_login(request: Request):
 @app.get("/oauth2-silent-check")
 async def oauth2_silent_check(request: Request):
     """Silent OAuth2 check to verify if user is already authenticated"""
-    # Use shared OAuth2 handler
-    
     request.session["auth_flow"] = "oauth2"
     request.session["silent_check"] = True
     
+    # Get the authorization URL
     auth_url = oauth2_user_handler.get_authorization_url()
     
     return RedirectResponse(auth_url)
@@ -291,20 +352,18 @@ async def callback(request: Request, code: str = None, state: str = None,
             """)
         
         try:
-            # Exchange code for access token
-            # Use shared OAuth2 handler
-            
-            # Construct the full callback URL with all parameters
-            callback_url = str(request.url)
-            
-            # Get access token by passing the full callback URL
-            print("callback_url: ", callback_url)
-            access_token = oauth2_user_handler.fetch_token(callback_url)
-            print("access_token: ", access_token)
+            # Get access tokenp
+            print(f"OAuth2 callback received with code: {code[:10]}...")  # Only print first 10 chars for security
+            # Construct the full authorization URL with the code parameter
+            authorization_response = f"{TWITTER_CALLBACK_URL}?code={code}"
+            if state:
+                authorization_response += f"&state={state}"
+            access_token = oauth2_user_handler.fetch_token(authorization_response)
+
             # Create client
+            print("client", access_token)
             client = tweepy.Client(access_token["access_token"])
             
-            # Get user information
             user_data = client.get_me(user_fields=["profile_image_url", "description", "name"], user_auth=False)
             
             # Store token in session
@@ -358,6 +417,14 @@ async def callback(request: Request, code: str = None, state: str = None,
                                 }}, 
                                 window.location.origin
                             );
+                            // Close this popup window after sending the message
+                            setTimeout(function() {{
+                                window.close();
+                                // If window doesn't close (e.g., if it wasn't opened by JavaScript)
+                                if (window.opener) {{
+                                    window.location.href = "/";
+                                }}
+                            }}, 1000);
                         </script>
                     </body>
                     </html>
@@ -601,6 +668,14 @@ async def callback(request: Request, code: str = None, state: str = None,
                                 }}, 
                                 window.location.origin
                             );
+                            // Close this popup window after sending the message
+                            setTimeout(function() {{
+                                window.close();
+                                // If window doesn't close (e.g., if it wasn't opened by JavaScript)
+                                if (window.opener) {{
+                                    window.location.href = "/";
+                                }}
+                            }}, 1000);
                         </script>
                     </body>
                     </html>
@@ -731,7 +806,7 @@ if __name__ == "__main__":
 # OAuth2 Credentials
 TWITTER_CLIENT_ID=your_client_id_here
 TWITTER_CLIENT_SECRET=your_client_secret_here
-TWITTER_CALLBACK_URL=http://localhost:8000/callback
+TWITTER_CALLBACK_URL=https://localhost:8000/callback
 
 # OAuth1 Credentials
 TWITTER_CONSUMER_KEY=your_consumer_key_here
@@ -742,4 +817,10 @@ SESSION_SECRET=generate_a_random_secret_here
 """)
         print("Created .env file. Please fill in your Twitter API credentials.")
     
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Generate self-signed certificates
+    cert_file, key_file = generate_self_signed_cert()
+    
+    # Run the server with the self-signed certificates
+    uvicorn.run(app, host="127.0.0.1", port=8000, 
+                ssl_keyfile=key_file, 
+                ssl_certfile=cert_file)

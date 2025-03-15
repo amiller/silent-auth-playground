@@ -33,13 +33,13 @@ Tests Twitter's OAuth implementations with both standard and silent authenticati
 
 1. **Install dependencies**:
    ```bash
-   pip install fastapi uvicorn tweepy python-dotenv jinja2
+   pip install -r requirements.txt
    ```
 
 2. **Configure your OAuth credentials**:
    - Create developer accounts with Google and Twitter
    - Set up projects/apps and enable OAuth
-   - Configure the callback URLs to point to your local server
+   - Configure the callback URLs to point to your local server (https://localhost:8000/callback)
    - Edit the `.env` file with your credentials:
      ```
      # Google OAuth credentials
@@ -49,7 +49,7 @@ Tests Twitter's OAuth implementations with both standard and silent authenticati
      # Twitter OAuth credentials
      TWITTER_CLIENT_ID=your_twitter_client_id_here
      TWITTER_CLIENT_SECRET=your_twitter_client_secret_here
-     TWITTER_CALLBACK_URL=http://localhost:8000/callback
+     TWITTER_CALLBACK_URL=https://localhost:8000/callback
      TWITTER_CONSUMER_KEY=your_twitter_consumer_key_here
      TWITTER_CONSUMER_SECRET=your_twitter_consumer_secret_here
      
@@ -61,10 +61,20 @@ Tests Twitter's OAuth implementations with both standard and silent authenticati
    ```bash
    python main.py
    ```
+   The application will automatically generate self-signed SSL certificates for localhost.
 
 4. **Access the playgrounds**:
-   - Google Auth: Open your browser and navigate to `http://localhost:8000/google`
-   - Twitter Auth: Open your browser and navigate to `http://localhost:8000/`
+   - Twitter Auth: Open your browser and navigate to `https://localhost:8000/`
+   - Note: Since the application uses self-signed certificates, you'll need to accept the security warning in your browser.
+
+## Self-Signed Certificates
+
+This application now generates self-signed SSL certificates automatically using Python's cryptography library. No external tools like mkcert are required. The certificates are generated when you first run the application and are saved as:
+
+- `localhost.crt` - The certificate file
+- `localhost.key` - The private key file
+
+These files will be reused on subsequent runs. If you need to regenerate the certificates, simply delete these files and restart the application.
 
 ## How Silent Authentication Works
 
