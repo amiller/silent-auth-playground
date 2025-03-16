@@ -3,6 +3,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 import os
 import httpx
 import json
@@ -18,6 +19,23 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 if not GOOGLE_CLIENT_ID:
     print("Warning: GOOGLE_CLIENT_ID not found in .env file")
 
+# Custom middleware for Content Security Policy
+class CSPMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://apis.google.com https://accounts.google.com https://www.gstatic.com https://*.googleapis.com https://cdnjs.cloudflare.com; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "img-src 'self' data: https://*.googleusercontent.com https://*.google.com; "
+            "font-src 'self' https://fonts.gstatic.com; "
+            "connect-src 'self' https://*.googleapis.com https://accounts.google.com; "
+            "frame-src 'self' https://accounts.google.com;"
+        )
+        # Add Cross-Origin-Opener-Policy header to allow window.opener communication
+        response.headers["Cross-Origin-Opener-Policy"] = "same-origin-allow-popups"
+        return response
+
 # Create FastAPI app
 app = FastAPI(title="Google Auth Playground")
 
@@ -26,6 +44,9 @@ app.add_middleware(
     SessionMiddleware,
     secret_key=os.getenv("SESSION_SECRET", "supersecretkey")
 )
+
+# Add CSP middleware
+app.add_middleware(CSPMiddleware)
 
 # Set up templates and static files
 templates = Jinja2Templates(directory="templates")

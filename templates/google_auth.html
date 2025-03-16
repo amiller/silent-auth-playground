@@ -6,6 +6,8 @@
     <title>Google Auth Playground</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
     <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}">
+    <!-- Load Google Identity Services -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -114,6 +116,7 @@
             <li><strong>Client-side flow</strong>: Uses only the client ID (public identifier)</li>
             <li><strong>Server-side flow</strong>: Uses both client ID and client secret (more secure)</li>
         </ul>
+        <div id="client-config" data-client-id="" style="display: none;"></div>
     </div>
 
     <div class="container">
@@ -124,7 +127,23 @@
                 <h3>Client-side Authentication</h3>
                 <p><small>Uses Google's JavaScript library with client ID only</small></p>
                 <button id="client-login">Login with Google (Client-side)</button>
-                <button id="silent-login" class="silent-btn">Silent Login (prompt=none)</button>
+                <div style="margin: 10px 0;">
+                    <input type="email" id="login-hint" placeholder="Email for silent login" style="padding: 8px; width: 250px; margin-right: 10px;">
+                    <button id="silent-login" class="silent-btn">Silent Login</button>
+                </div>
+                <div id="g_id_onload" data-client_id="" data-callback="handleCredentialResponse" data-auto_select="false" style="display: none;"></div>
+                <div class="info" style="margin-top: 10px; font-size: 0.9em;">
+                    <strong>About Silent Login:</strong>
+                    <p>This implementation uses Google Identity Services to attempt a silent login without user interaction.</p>
+                    <p>Silent login will only work if:</p>
+                    <ol>
+                        <li>The user has previously logged in and granted consent to your app</li>
+                        <li>The user has an active Google session in their browser</li>
+                        <li>The user hasn't revoked access to your application</li>
+                        <li>The session/token hasn't expired</li>
+                    </ol>
+                    <p><strong>Try this:</strong> First click "Login with Google" to authenticate normally, then try "Silent Login" with the same email address.</p>
+                </div>
             </div>
             
             <div class="auth-method">
@@ -163,8 +182,8 @@
     </div>
 
     <script>
-        let googleClient = null;
         let tokenClient = null;
+        let googleClientId = null;
         
         // Helper to update status
         function updateStatus(message, type) {
@@ -185,61 +204,63 @@
                         return;
                     }
                     
-                    // Load the Google Identity Services script
-                    const script = document.createElement('script');
-                    script.src = 'https://accounts.google.com/gsi/client';
-                    script.async = true;
-                    script.defer = true;
-                    script.onload = () => {
-                        try {
-                            // Initialize Google client
-                            google.accounts.id.initialize({
-                                client_id: clientId,
-                                callback: handleCredentialResponse,
-                                auto_select: false
-                            });
-                            
-                            // Also initialize the token client for silent auth
-                            tokenClient = google.accounts.oauth2.initTokenClient({
-                                client_id: clientId,
-                                scope: 'email profile openid',
-                                callback: (tokenResponse) => {
-                                    if (tokenResponse.error) {
-                                        updateStatus(`Silent login failed: ${tokenResponse.error}`, 'error');
-                                        return;
-                                    }
-                                    
-                                    // Successfully got a token
-                                    updateStatus('Silent login successful!', 'success');
-                                    // Use the access token to get user info
-                                    fetchUserInfoWithToken(tokenResponse.access_token);
-                                    
-                                    // Also send the token to the server
-                                    fetch('/api/store-token', {
-                                        method: 'POST',
-                                        headers: {
-                                            'Content-Type': 'application/json'
-                                        },
-                                        body: JSON.stringify({
-                                            access_token: tokenResponse.access_token
-                                        })
-                                    });
-                                }
-                            });
-                            
-                            updateStatus('Google client initialized. Ready to authenticate.');
-                        } catch (error) {
-                            updateStatus(`Error initializing Google client: ${error.message}`, 'error');
+                    // Store client ID globally
+                    googleClientId = clientId;
+                    
+                    // Initialize Google Identity Services
+                    if (typeof google !== 'undefined' && google.accounts) {
+                        // Initialize Google client
+                        google.accounts.id.initialize({
+                            client_id: clientId,
+                            callback: handleCredentialResponse,
+                            auto_select: true
+                        });
+                        
+                        // Initialize token client for OAuth 2.0 flow
+                        tokenClient = google.accounts.oauth2.initTokenClient({
+                            client_id: clientId,
+                            scope: 'email profile openid',
+                            callback: handleTokenResponse
+                        });
+                        
+                        // Set client ID for One Tap sign-in
+                        const gIdOnload = document.getElementById('g_id_onload');
+                        if (gIdOnload) {
+                            gIdOnload.setAttribute('data-client_id', clientId);
+                            gIdOnload.style.display = 'block';
                         }
-                    };
-                    document.head.appendChild(script);
+                        
+                        updateStatus('Google client initialized. Ready to authenticate.', 'info');
+                    } else {
+                        updateStatus('Google Identity Services not loaded. Please check your internet connection.', 'error');
+                    }
                 })
                 .catch(error => {
-                    updateStatus(`Error fetching client configuration: ${error.message}`, 'error');
+                    console.error('Error fetching client configuration:', error);
+                    updateStatus(`Error: ${error.message}`, 'error');
                 });
         }
         
-        // Handle credential response from client-side login
+        // Handle token response from OAuth2 client
+        function handleTokenResponse(tokenResponse) {
+            if (tokenResponse.error) {
+                updateStatus(`Silent login failed: ${tokenResponse.error}`, 'error');
+                return;
+            }
+            
+            // Successfully got a token
+            updateStatus('Silent login successful!', 'success');
+            fetchUserInfoWithToken(tokenResponse.access_token);
+            
+            // Send the token to the server
+            fetch('/api/store-token', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ access_token: tokenResponse.access_token })
+            });
+        }
+        
+        // Handle credential response from Google Identity Services
         function handleCredentialResponse(response) {
             const credential = response.credential;
             if (credential) {
@@ -249,12 +270,8 @@
                 // Send the token to the server
                 fetch('/api/store-token', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        id_token: credential
-                    })
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id_token: credential })
                 });
             } else {
                 updateStatus('Login failed.', 'error');
@@ -264,9 +281,7 @@
         // Fetch user info using access token
         function fetchUserInfoWithToken(accessToken) {
             fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-                headers: {
-                    'Authorization': `Bearer ${accessToken}`
-                }
+                headers: { 'Authorization': `Bearer ${accessToken}` }
             })
             .then(response => response.json())
             .then(data => {
@@ -277,9 +292,15 @@
                 document.getElementById('userInfo').style.display = 'block';
                 document.getElementById('auth-method-used').textContent = 'Client-side authentication with access token';
                 document.getElementById('token-payload').textContent = JSON.stringify(data, null, 2);
+                
+                // Store email for silent login
+                if (data.email) {
+                    document.getElementById('login-hint').value = data.email;
+                    localStorage.setItem('lastLoginEmail', data.email);
+                }
             })
             .catch(error => {
-                updateStatus(`Error fetching user info: ${error.message}`, 'error');
+                console.error('Error fetching user info:', error);
             });
         }
         
@@ -295,6 +316,12 @@
             document.getElementById('userInfo').style.display = 'block';
             document.getElementById('auth-method-used').textContent = 'Client-side authentication with ID token';
             document.getElementById('token-payload').textContent = JSON.stringify(payload, null, 2);
+            
+            // Store email for silent login
+            if (payload.email) {
+                document.getElementById('login-hint').value = payload.email;
+                localStorage.setItem('lastLoginEmail', payload.email);
+            }
         }
         
         // Fetch user info from server (for both auth methods)
@@ -321,6 +348,12 @@
                         });
                     
                     document.getElementById('token-payload').textContent = JSON.stringify(data, null, 2);
+                    
+                    // Store email for silent login
+                    if (data.email) {
+                        document.getElementById('login-hint').value = data.email;
+                        localStorage.setItem('lastLoginEmail', data.email);
+                    }
                 })
                 .catch(error => {
                     console.log('Not logged in:', error);
@@ -330,23 +363,44 @@
         
         // Event Listeners
         document.getElementById('client-login').addEventListener('click', () => {
-            google.accounts.id.prompt();
-            updateStatus('Showing login popup...', 'info');
+            if (typeof google !== 'undefined' && google.accounts) {
+                // Use Google Identity Services for login
+                google.accounts.id.prompt();
+                updateStatus('Showing login popup...', 'info');
+            } else {
+                updateStatus('Google Identity Services not loaded. Please check your internet connection.', 'error');
+            }
         });
         
         document.getElementById('silent-login').addEventListener('click', () => {
             updateStatus('Attempting silent login...', 'info');
             
-            // Request token with prompt=none
-            tokenClient.requestAccessToken({
-                prompt: 'none'
-            });
+            if (tokenClient) {
+                // Get login hint from input field
+                const loginHint = document.getElementById('login-hint').value.trim();
+                
+                if (!loginHint) {
+                    updateStatus('Please enter an email address for silent login', 'error');
+                    return;
+                }
+                
+                // Use token client for silent login with login_hint
+                tokenClient.requestAccessToken({ 
+                    prompt: 'none', 
+                    login_hint: loginHint 
+                });
+            } else {
+                updateStatus('Google authentication not initialized yet', 'error');
+            }
         });
         
         document.getElementById('logout').addEventListener('click', () => {
-            // Try to disable auto select if Google client is loaded
-            if (typeof google !== 'undefined' && google.accounts && google.accounts.id) {
+            // Sign out from Google Identity Services
+            if (typeof google !== 'undefined' && google.accounts) {
                 google.accounts.id.disableAutoSelect();
+                google.accounts.id.revoke(googleClientId, () => {
+                    updateStatus('Logged out successfully.', 'info');
+                });
             }
             
             // Clear display
@@ -357,17 +411,19 @@
             document.getElementById('token-payload').textContent = '';
             
             // Clear session on server
-            fetch('/api/logout', {
-                method: 'POST'
-            });
-            
-            updateStatus('Logged out successfully.', 'info');
+            fetch('/api/logout', { method: 'POST' });
         });
         
-        // Check if user is logged in on page load
+        // Initialize on page load
         window.onload = function() {
             fetchUserInfo();
             initializeGoogleClient();
+            
+            // Restore last used email from localStorage if available
+            const lastLoginEmail = localStorage.getItem('lastLoginEmail');
+            if (lastLoginEmail) {
+                document.getElementById('login-hint').value = lastLoginEmail;
+            }
         };
     </script>
 </body>

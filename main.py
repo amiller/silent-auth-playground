@@ -91,7 +91,18 @@ def generate_self_signed_cert(cert_file="localhost.crt", key_file="localhost.key
 class CSPMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
-        response.headers["Content-Security-Policy"] = "frame-ancestors 'self' *.twitter.com;"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://apis.google.com https://accounts.google.com https://www.gstatic.com https://*.googleapis.com; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "img-src 'self' data: https://*.googleusercontent.com https://*.google.com; "
+            "font-src 'self' https://fonts.gstatic.com; "
+            "connect-src 'self' https://*.googleapis.com https://accounts.google.com; "
+            "frame-src 'self' https://accounts.google.com; "
+            "frame-ancestors 'self' *.twitter.com;"
+        )
+        # Add Cross-Origin-Opener-Policy header to allow window.opener communication
+        response.headers["Cross-Origin-Opener-Policy"] = "same-origin-allow-popups"
         return response
 
 # FastAPI app setup
